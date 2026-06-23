@@ -4,6 +4,11 @@ from .models import Notification, PushSubscription
 
 
 class PushSubscriptionSerializer(serializers.ModelSerializer):
+    # Declared explicitly (not left to ModelSerializer's auto-generated
+    # UniqueValidator) -- re-registering an existing token must reach
+    # perform_create's reactivation logic instead of failing validation.
+    registration_token = serializers.CharField(max_length=255)
+
     class Meta:
         model = PushSubscription
         fields = ["id", "registration_token", "user_agent", "is_active", "created_at"]

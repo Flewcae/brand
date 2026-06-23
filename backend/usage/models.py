@@ -1,4 +1,5 @@
 import uuid
+from decimal import Decimal
 
 from django.db import models
 
@@ -63,7 +64,9 @@ class UsageLog(models.Model):
 
     def save(self, *args, **kwargs):
         if self.estimated_cost_usd is None and self.cost_in_usd_ticks is not None:
-            self.estimated_cost_usd = self.cost_in_usd_ticks / self.TICKS_PER_USD
+            # Decimal division, not int/int -- this field is a DecimalField and
+            # must never hold a binary-float approximation in memory.
+            self.estimated_cost_usd = Decimal(self.cost_in_usd_ticks) / Decimal(self.TICKS_PER_USD)
         super().save(*args, **kwargs)
 
     def __str__(self):
