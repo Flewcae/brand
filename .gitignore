@@ -4,6 +4,7 @@ __pycache__/
 .env
 /backend/staticfiles/
 /backend/mediafiles/
+/backend/celerybeat-schedule
 .venv/
 venv/
 *.log
