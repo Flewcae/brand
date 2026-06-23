@@ -1,13 +1,28 @@
-import json
 import logging
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
+import firebase_admin
 from celery import shared_task
 from django.conf import settings
 from django.utils import timezone
+from firebase_admin import credentials, messaging
+from firebase_admin.exceptions import FirebaseError
 
 logger = logging.getLogger(__name__)
+
+_firebase_app = None
+
+
+def _get_firebase_app():
+    global _firebase_app
+    if _firebase_app is None:
+        if firebase_admin._apps:
+            _firebase_app = firebase_admin.get_app()
+        else:
+            cred = credentials.Certificate(settings.FIREBASE_CREDENTIALS_PATH)
+            _firebase_app = firebase_admin.initialize_app(cred)
+    return _firebase_app
 
 ESCALATION_STEPS = [
     ("sent_24h", timedelta(hours=24), "reminder_24h", "Yarın paylaşım var"),
@@ -85,7 +100,7 @@ def send_notification(
         related_calendar_entry_id=related_calendar_entry_id,
         related_generation_version_id=related_generation_version_id,
     )
-    send_web_push.delay(str(notification.id))
+    send_fcm_push.delay(str(notification.id))
     return str(notification.id)
 
 
@@ -122,9 +137,7 @@ def notify_brand_agency(
 
 
 @shared_task
-def send_web_push(notification_id):
-    from pywebpush import WebPushException, webpush
-
+def send_fcm_push(notification_id):
     from .models import Notification, PushSubscription
 
     notification = Notification.objects.select_related("user").get(id=notification_id)
@@ -135,27 +148,23 @@ def send_web_push(notification_id):
         notification.save(update_fields=["delivery_status"])
         return
 
-    payload = json.dumps({"title": notification.title, "body": notification.body})
+    _get_firebase_app()
     any_sent = False
 
     for subscription in subscriptions:
+        message = messaging.Message(
+            notification=messaging.Notification(title=notification.title, body=notification.body),
+            token=subscription.registration_token,
+        )
         try:
-            webpush(
-                subscription_info={
-                    "endpoint": subscription.endpoint,
-                    "keys": {"p256dh": subscription.p256dh_key, "auth": subscription.auth_key},
-                },
-                data=payload,
-                vapid_private_key=settings.VAPID_PRIVATE_KEY,
-                vapid_claims={"sub": f"mailto:{settings.VAPID_ADMIN_EMAIL}"},
-            )
+            messaging.send(message)
             any_sent = True
-        except WebPushException as exc:
-            status_code = getattr(exc.response, "status_code", None)
-            if status_code == 410:
+        except FirebaseError as exc:
+            # Token no longer valid (app uninstalled, permission revoked, etc.)
+            if getattr(exc, "code", None) in ("NOT_FOUND", "UNREGISTERED", "INVALID_ARGUMENT"):
                 subscription.is_active = False
                 subscription.save(update_fields=["is_active"])
-            logger.warning("Web push failed for subscription_id=%s: %s", subscription.id, exc)
+            logger.warning("FCM push failed for subscription_id=%s: %s", subscription.id, exc)
 
     notification.delivery_status = (
         Notification.DeliveryStatus.SENT if any_sent else Notification.DeliveryStatus.FAILED

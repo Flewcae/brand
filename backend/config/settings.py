@@ -143,7 +143,5 @@ STORAGES = {
 ANTHROPIC_API_KEY = config("ANTHROPIC_API_KEY", default="")
 XAI_API_KEY = config("XAI_API_KEY", default="")
 
-# --- Web push (VAPID) ---
-VAPID_PUBLIC_KEY = config("VAPID_PUBLIC_KEY", default="")
-VAPID_PRIVATE_KEY = config("VAPID_PRIVATE_KEY", default="")
-VAPID_ADMIN_EMAIL = config("VAPID_ADMIN_EMAIL", default="admin@example.com")
+# --- Push notifications (Firebase Cloud Messaging) ---
+FIREBASE_CREDENTIALS_PATH = config("FIREBASE_CREDENTIALS_PATH", default="")

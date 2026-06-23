@@ -9,15 +9,13 @@ from brands.models import BrandProfile
 class PushSubscription(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="push_subscriptions")
-    endpoint = models.URLField(max_length=500, unique=True)
-    p256dh_key = models.CharField(max_length=255)
-    auth_key = models.CharField(max_length=255)
+    registration_token = models.CharField(max_length=255, unique=True)
     user_agent = models.CharField(max_length=255, blank=True)
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     def __str__(self):
-        return f"{self.user} - {self.endpoint[:40]}"
+        return f"{self.user} - {self.registration_token[:20]}"
 
 
 class Notification(models.Model):
@@ -31,7 +29,7 @@ class Notification(models.Model):
         SUGGESTION_BATCH_READY = "suggestion_batch_ready", "Suggestion batch ready"
 
     class Channel(models.TextChoices):
-        WEB_PUSH = "web_push", "Web push"
+        FCM = "fcm", "Firebase Cloud Messaging"
         IN_APP_ONLY = "in_app_only", "In-app only"
 
     class DeliveryStatus(models.TextChoices):
@@ -63,7 +61,7 @@ class Notification(models.Model):
         related_name="notifications",
     )
     is_read = models.BooleanField(default=False)
-    channel = models.CharField(max_length=20, choices=Channel.choices, default=Channel.WEB_PUSH)
+    channel = models.CharField(max_length=20, choices=Channel.choices, default=Channel.FCM)
     delivery_status = models.CharField(
         max_length=30, choices=DeliveryStatus.choices, default=DeliveryStatus.PENDING
     )

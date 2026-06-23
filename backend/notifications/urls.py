@@ -20,9 +20,4 @@ urlpatterns = [
         views.MarkAllReadView.as_view(),
         name="notification-mark-all-read",
     ),
-    path(
-        "notifications/vapid-public-key/",
-        views.VapidPublicKeyView.as_view(),
-        name="vapid-public-key",
-    ),
 ]

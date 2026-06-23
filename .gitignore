@@ -5,6 +5,7 @@ __pycache__/
 /backend/staticfiles/
 /backend/mediafiles/
 /backend/celerybeat-schedule
+/backend/firebase-service-account.json
 .venv/
 venv/
 *.log

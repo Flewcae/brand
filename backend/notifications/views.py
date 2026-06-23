@@ -1,4 +1,3 @@
-from django.conf import settings
 from rest_framework import generics, permissions, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -12,14 +11,12 @@ class PushSubscriptionCreateView(generics.CreateAPIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def perform_create(self, serializer):
-        # Re-subscribing with the same endpoint (e.g. browser storage cleared)
+        # Re-registering with the same FCM token (e.g. app reinstall/reload)
         # reactivates the existing row instead of violating the unique
-        # constraint on endpoint.
-        endpoint = serializer.validated_data["endpoint"]
-        existing = PushSubscription.objects.filter(endpoint=endpoint).first()
+        # constraint on registration_token.
+        token = serializer.validated_data["registration_token"]
+        existing = PushSubscription.objects.filter(registration_token=token).first()
         if existing:
-            existing.p256dh_key = serializer.validated_data["p256dh_key"]
-            existing.auth_key = serializer.validated_data["auth_key"]
             existing.user_agent = serializer.validated_data.get("user_agent", existing.user_agent)
             existing.user = self.request.user
             existing.is_active = True
@@ -62,10 +59,3 @@ class MarkAllReadView(APIView):
     def post(self, request):
         Notification.objects.filter(user=request.user, is_read=False).update(is_read=True)
         return Response(status=status.HTTP_204_NO_CONTENT)
-
-
-class VapidPublicKeyView(APIView):
-    permission_classes = [permissions.IsAuthenticated]
-
-    def get(self, request):
-        return Response({"vapid_public_key": settings.VAPID_PUBLIC_KEY})

@@ -1,0 +1,8 @@
+firebase-service-account.json
+.env
+__pycache__/
+*.pyc
+celerybeat-schedule
+staticfiles/
+mediafiles/
+.git/
