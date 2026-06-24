@@ -20,14 +20,14 @@ _LOCAL_STORAGE = override_settings(
 )
 
 
-def _create_entry(brand, content_format="image", aspect_ratio="square"):
+def _create_entry(brand, content_format="image", aspect_ratio="square", brief="Test brief"):
     return ContentCalendarEntry.objects.create(
         brand=brand,
         scheduled_date=date.today(),
         content_format=content_format,
         aspect_ratio=aspect_ratio,
         source=ContentCalendarEntry.Source.USER_INPUT,
-        brief="Test brief",
+        brief=brief,
     )
 
 
@@ -67,6 +67,68 @@ class RunImageGenerationTaskTests(TestCase):
         usage_log = UsageLog.objects.get(generation_version=version, provider=UsageLog.Provider.GROK)
         self.assertEqual(usage_log.cost_in_usd_ticks, 700000000)
         self.assertEqual(float(usage_log.estimated_cost_usd), 0.07)
+
+    def test_final_prompt_demands_exact_text_rendering_when_text_specified(self):
+        """Regression guard: when the brief asks for on-image text, the
+        final prompt actually sent to Grok must always carry a deterministic,
+        code-enforced 'render exactly as written' clause -- never left to
+        the LLM's discretion, since image models routinely garble text and
+        Claude won't reliably restate this instruction on its own."""
+        _, agency = create_agency_with_user()
+        brand = create_brand(agency)
+        entry = _create_entry(brand, brief='Kahve fiyatı: "20 TL" yazsın')
+        version = GenerationVersion.objects.create(
+            calendar_entry=entry, version_number=1, media_type=GenerationVersion.MediaType.IMAGE
+        )
+
+        claude_response = make_claude_response(
+            '{"prompt": "A coffee cup with a price tag.", "on_image_text": "20 TL"}'
+        )
+        grok_response = make_httpx_response(
+            json_data={"data": [{"url": "https://imgen.x.ai/fake.png"}], "usage": {}}
+        )
+        download_response = make_httpx_response(content=b"fake-image-bytes")
+
+        with patch("anthropic.Anthropic") as mock_anthropic, patch(
+            "generation.tasks.httpx.post", return_value=grok_response
+        ), patch("generation.tasks.httpx.get", return_value=download_response), patch(
+            "notifications.tasks.send_notification.delay"
+        ):
+            mock_anthropic.return_value.messages.create.return_value = claude_response
+            run_image_generation(str(version.id))
+
+        version.refresh_from_db()
+        self.assertIn(
+            'Render the text "20 TL" exactly as written, correctly spelled',
+            version.claude_prompt_text,
+        )
+
+    def test_final_prompt_forbids_text_when_none_specified(self):
+        _, agency = create_agency_with_user()
+        brand = create_brand(agency)
+        entry = _create_entry(brand, brief="Sicak bir kahve fotosu")
+        version = GenerationVersion.objects.create(
+            calendar_entry=entry, version_number=1, media_type=GenerationVersion.MediaType.IMAGE
+        )
+
+        claude_response = make_claude_response(
+            '{"prompt": "A warm coffee photo.", "on_image_text": null}'
+        )
+        grok_response = make_httpx_response(
+            json_data={"data": [{"url": "https://imgen.x.ai/fake.png"}], "usage": {}}
+        )
+        download_response = make_httpx_response(content=b"fake-image-bytes")
+
+        with patch("anthropic.Anthropic") as mock_anthropic, patch(
+            "generation.tasks.httpx.post", return_value=grok_response
+        ), patch("generation.tasks.httpx.get", return_value=download_response), patch(
+            "notifications.tasks.send_notification.delay"
+        ):
+            mock_anthropic.return_value.messages.create.return_value = claude_response
+            run_image_generation(str(version.id))
+
+        version.refresh_from_db()
+        self.assertIn("Do not include any text", version.claude_prompt_text)
 
     def test_failed_grok_call_marks_failed_and_notifies_requester(self):
         user, agency = create_agency_with_user()

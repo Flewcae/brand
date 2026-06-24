@@ -124,6 +124,10 @@ AWS_ACCESS_KEY_ID = config("AWS_ACCESS_KEY_ID", default="minioadmin")
 AWS_SECRET_ACCESS_KEY = config("AWS_SECRET_ACCESS_KEY", default="minioadmin")
 AWS_STORAGE_BUCKET_NAME = config("AWS_STORAGE_BUCKET_NAME", default="flewcae-media")
 AWS_S3_ENDPOINT_URL = config("AWS_S3_ENDPOINT_URL", default="http://minio:9000")
+# Browser-reachable address for the same MinIO instance -- Django/Celery
+# reach it via the Docker-internal hostname above, but generated media URLs
+# returned to the frontend must use this one instead. See storage_backends.py.
+AWS_S3_PUBLIC_ENDPOINT_URL = config("AWS_S3_PUBLIC_ENDPOINT_URL", default="http://localhost:9000")
 AWS_S3_USE_SSL = config("AWS_S3_USE_SSL", default=False, cast=bool)
 AWS_S3_FILE_OVERWRITE = False
 AWS_DEFAULT_ACL = None
@@ -132,7 +136,7 @@ AWS_QUERYSTRING_EXPIRE = config("AWS_QUERYSTRING_EXPIRE", default=604800, cast=i
 
 STORAGES = {
     "default": {
-        "BACKEND": "storages.backends.s3boto3.S3Boto3Storage",
+        "BACKEND": "config.storage_backends.PublicURLS3Boto3Storage",
     },
     "staticfiles": {
         "BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage",

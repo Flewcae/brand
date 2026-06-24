@@ -1,4 +1,6 @@
+import json
 import logging
+import re
 
 import httpx
 from celery import shared_task
@@ -18,11 +20,35 @@ ASPECT_RATIO_MAP = {
     "square": "1:1",
 }
 
+# Appended in code, never left to the LLM to remember -- image/video models
+# routinely garble on-image text, so the render-exactly-as-written clause
+# must always be present (or the explicit no-text clause) regardless of
+# whether Claude's own prose happens to restate it.
+TEXT_RENDER_CLAUSE = (
+    'Render the text "{text}" exactly as written, correctly spelled, fully '
+    "legible, with clean accurate typography -- do not distort, garble, "
+    "duplicate, or misspell any character."
+)
+NO_TEXT_CLAUSE = (
+    "Do not include any text, typography, captions, signage, or watermarks "
+    "anywhere in the image/video."
+)
+
 PROMPT_WRITING_INSTRUCTIONS = (
     "Aşağıdaki marka bağlamını ve içerik brief'ini kullanarak, bir görsel/"
-    "video üretim modeli için optimize edilmiş, İngilizce, tek paragraflık "
-    "bir üretim prompt'u yaz. Sadece prompt metnini döndür, başka açıklama "
-    "ekleme.\n\n{brand_context}\n{holiday_line}\nİçerik brief'i: {brief}\n"
+    "video üretim modeli için optimize edilmiş, İngilizce bir üretim "
+    "prompt'u yaz.\n\n"
+    "Brief'te görselde/videoda GÖRÜNMESİ istenen bir slogan, fiyat, tarih, "
+    "isim veya başka bir yazı/ifade varsa, bu metni `on_image_text` alanına "
+    "harf harf BİREBİR aynı şekilde yaz (Türkçe karakterler dahil: ı, İ, ş, "
+    "ğ, ü, ö, ç -- değiştirme, sadeleştirme veya İngilizceye çevirme). "
+    "Brief'te görselde gözükmesi gereken bir metin YOKSA `on_image_text`'i "
+    "null yap -- kendiliğinden slogan/yazı icat ETME. Metnin render "
+    "doğruluğu kod tarafında ayrıca garanti edilecek, bunun için prompt "
+    "icine ekstra bir seyler eklemene gerek yok; sadece sahneyi tasvir et.\n\n"
+    "Sadece şu şemaya uyan tek bir JSON nesnesi döndür, başka hiçbir metin "
+    'ekleme: {{"prompt": "...", "on_image_text": "..." veya null}}\n\n'
+    "{brand_context}\n{holiday_line}\nİçerik brief'i: {brief}\n"
     "Format: {aspect_ratio}"
 )
 
@@ -32,6 +58,17 @@ def _xai_headers():
         "Authorization": f"Bearer {settings.XAI_API_KEY}",
         "Content-Type": "application/json",
     }
+
+
+def _parse_prompt_response(text):
+    match = re.search(r"\{.*\}", text, re.DOTALL)
+    if not match:
+        return text.strip(), None
+    try:
+        data = json.loads(match.group(0))
+    except json.JSONDecodeError:
+        return text.strip(), None
+    return data.get("prompt", text).strip(), data.get("on_image_text") or None
 
 
 def _build_grok_prompt(version):
@@ -57,7 +94,11 @@ def _build_grok_prompt(version):
         messages=[{"role": "user", "content": prompt_request}],
     )
     _log_claude_usage(brand, version, response)
-    return "".join(block.text for block in response.content if block.type == "text").strip()
+    raw_text = "".join(block.text for block in response.content if block.type == "text")
+    base_prompt, on_image_text = _parse_prompt_response(raw_text)
+
+    text_clause = TEXT_RENDER_CLAUSE.format(text=on_image_text) if on_image_text else NO_TEXT_CLAUSE
+    return f"{base_prompt} {text_clause}"
 
 
 def _log_claude_usage(brand, version, response):
@@ -175,7 +216,6 @@ def submit_video_generation(version_id):
     from .models import GenerationVersion
 
     version = GenerationVersion.objects.select_related("calendar_entry__brand").get(id=version_id)
-    entry = version.calendar_entry
 
     try:
         prompt_text = _build_grok_prompt(version)
@@ -183,12 +223,18 @@ def submit_video_generation(version_id):
         version.status = GenerationVersion.Status.PROMPT_READY
         version.save(update_fields=["claude_prompt_text", "status"])
 
+        # Deliberately minimal -- confirmed empirically against the live API:
+        # "grok-imagine-video" is the text-to-video model ("grok-imagine-
+        # video-1.5" rejects text-only prompts with "Text-to-video is not
+        # supported for this model" -- it's image-to-video only). The old
+        # hardcoded "resolution": "1080p" was also rejected ("1080p video
+        # resolution is not available for this model"). Rather than guess
+        # another enum value with unconfirmed support, omit both resolution
+        # and aspect_ratio and let xAI apply its own defaults.
         payload = {
             "model": GROK_VIDEO_MODEL,
             "prompt": prompt_text,
-            "aspect_ratio": ASPECT_RATIO_MAP.get(entry.aspect_ratio, "16:9"),
             "duration": 8,
-            "resolution": "1080p",
         }
         version.grok_request_payload = payload
         version.status = GenerationVersion.Status.SUBMITTED
@@ -250,7 +296,9 @@ def poll_video_generation(version_id):
             return  # leave as processing, scanner will retry next cycle
 
         if remote_status == "done":
-            video_url = data["url"]
+            # Documented response shape nests the result under "video": {"url": ...}
+            # rather than a top-level "url" -- accept either defensively.
+            video_url = (data.get("video") or {}).get("url") or data.get("url")
             cost_ticks = (data.get("usage") or {}).get("cost_in_usd_ticks")
             media_bytes = httpx.get(video_url, timeout=120).content
             version.media_file.save(f"{version.id}.mp4", ContentFile(media_bytes), save=False)
@@ -259,9 +307,9 @@ def poll_video_generation(version_id):
             version.save(update_fields=["media_file", "grok_response_meta", "status", "updated_at"])
             _log_grok_usage(brand, version, GROK_VIDEO_MODEL, "video_generation", cost_ticks)
             _notify_generation_result(version, success=True)
-        elif remote_status == "failed":
+        elif remote_status in ("failed", "expired"):
             version.status = GenerationVersion.Status.FAILED
-            version.error_message = data.get("error", "Grok video generation failed.")
+            version.error_message = data.get("error") or f"Grok video generation {remote_status}."
             version.save(update_fields=["status", "error_message", "updated_at"])
             _notify_generation_result(version, success=False)
     except Exception:
